@@ -4,6 +4,9 @@ library;
 import '../file_scanner.dart';
 import 'ax_checks.dart';
 import 'dx_checks.dart';
+import 'graph_checks.dart';
+import 'history.dart';
+import 'import_graph.dart';
 import 'instructions.dart';
 import 'model.dart';
 import 'repo.dart';
@@ -20,6 +23,12 @@ Future<Map<String, Object?>> runReadiness({
     reports: reports,
     docs: loadInstructionDocs(repo),
   );
+  final graph = ImportGraph.build(
+    root: root,
+    packages: c.packages,
+    reports: reports,
+  );
+  final history = await History.read(repo);
 
   final checks = <ReadinessCheck>[
     await instructionFileCheck(c),
@@ -30,6 +39,9 @@ Future<Map<String, Object?>> runReadiness({
     honestExitCodesCheck(c),
     inconsistentPatternsCheck(c),
     generatedNoiseCheck(c),
+    testMappingCheck(c, graph, history),
+    unusedFilesCheck(c, graph),
+    coChangeCheck(c, graph, history),
     lintConfigCheck(c),
     runFormat
         ? await formatCheck(c)

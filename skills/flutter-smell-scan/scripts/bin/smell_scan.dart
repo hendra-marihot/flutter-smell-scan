@@ -31,7 +31,8 @@ Future<void> main(List<String> argv) async {
       'readiness',
       help:
           'Add the agent-readiness scorecard (instruction files, commands, '
-          'scripts, CI, lint config, formatting) to the report.',
+          'scripts, tests, unused files, git co-change, CI, lint config, '
+          'formatting) to the report.',
     )
     ..addFlag(
       'format',

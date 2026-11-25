@@ -1,6 +1,6 @@
 ---
 name: flutter-agent-readiness
-description: Audit how ready a Flutter or Dart repository is for AI coding agents (Claude Code, Codex, Copilot, Cursor) and return a pass/warn/fail scorecard with evidence and a fix for each gap. A bundled read-only scanner checks the instruction files (CLAUDE.md, AGENTS.md and others, including broken paths), documented commands, interactive and unguarded deploy scripts, pre-commit hooks, scripts that hide failures behind exit code 0, inconsistent library patterns, generated-code noise, lint config, formatting, CI parity, and setup docs; Claude then checks whether the instruction rules are enforced and followed, and reads for what a scanner cannot see. Use this whenever the user asks if a repo is "agent ready" or "AI ready", to audit or improve a CLAUDE.md or AGENTS.md, why agents struggle in a codebase, how to make a Flutter repo easier for Claude to work in, or for an AX or DX audit, even if they don't say "readiness". Not for a code-smell list (use flutter-smell-scan), for writing a CLAUDE.md from scratch (use init), or for non-Dart repos.
+description: Audit how ready a Flutter or Dart repository is for AI coding agents (Claude Code, Codex, Copilot, Cursor) and return a pass/warn/fail scorecard with evidence and a fix for each gap. A bundled read-only scanner checks the instruction files (CLAUDE.md, AGENTS.md and others, including broken paths), documented commands, interactive and unguarded deploy scripts, pre-commit hooks, scripts that hide failures behind exit code 0, inconsistent library patterns, generated-code noise, files without a test, unused files, hidden git co-change, lint config, formatting, CI parity, and setup docs; Claude then checks whether the instruction rules are enforced and followed, and reads for what a scanner cannot see. Use this whenever the user asks if a repo is "agent ready" or "AI ready", to audit or improve a CLAUDE.md or AGENTS.md, why agents struggle in a codebase, how to make a Flutter repo easier for Claude to work in, or for an AX or DX audit, even if they don't say "readiness". Not for a code-smell list (use flutter-smell-scan), for writing a CLAUDE.md from scratch (use init), or for non-Dart repos.
 ---
 
 # Flutter Agent Readiness
@@ -13,7 +13,7 @@ Write the report in the voice defined in `~/.claude/rules/writing-voice.md` if t
 
 ## Rules
 
-- **The scan is read-only.** Never edit, format, or `pub get` the target project during the audit. The scanner only reads files, runs `git ls-files`, `git check-ignore`, and `dart format --output=none`, which writes nothing. If the user wants fixes, finish the report first, then ask.
+- **The scan is read-only.** Never edit, format, or `pub get` the target project during the audit. The scanner only reads files, runs `git ls-files`, `git check-ignore`, `git log`, and `dart format --output=none`, which writes nothing. If the user wants fixes, finish the report first, then ask.
 - **Read the report file, not stdout.** The scanner prints a short summary only. Read the JSON with the Read tool or `jq`. Shell output filters (such as rtk) can shorten output and change counts.
 - **Check before you report.** For every `warn` and `fail`, open at least one evidence path and confirm it. Drop a result you cannot confirm, and say how many you dropped.
 - **No score.** Report pass, warn, fail and unknown counts. Do not invent a total number.
@@ -46,8 +46,9 @@ Do these in order. Stop at about 15 tool calls in total.
 1. **Rules against code.** Pick 3 to 5 concrete, checkable rules from the instruction file. Grep for violations. Report each broken rule with a count and 1 or 2 `file:line` examples. For each rule, also say whether a lint, analyzer plugin, test or CI step enforces it, or whether it is only written down. A rule that matters should be checked by a machine.
 2. **Error messages.** Read 5 to 10 `throw`, `Failure(...)` and script error sites in the main code. A good message says what failed, lists the valid values or the next step, and has no default stack trace. Report vague ones with `file:line`.
 3. **Hidden behaviour.** Look for code that runs because of file location, reflection, `noSuchMethod`, or implicit config that the instruction file does not explain.
-4. **Dead code.** Use the `commented-out-code` findings. If `dcm` is on PATH, run `dcm check-unused-files <dir>`.
-5. **Large files.** Report the `long-file` count from `summary.bySmell` and the 3 largest files, because an agent reads whole files into its context.
+4. **Dead code.** `unused-files` covers whole files. Add the `commented-out-code` findings. If `dcm` is on PATH, run `dcm check-unused-code <dir>` for unused classes and functions.
+5. **Hidden links.** Read all of `co-change` `details.hiddenPairs`. Drop layered pairs: an interface and its data source that a repository implementation in `importedTogetherBy` imports. Open both files of the top 3 pairs that remain, and of any pair with an empty `importedTogetherBy`, and say what links them. Report duplicated code and values kept in sync by hand.
+6. **Large files.** Report the `long-file` count from `summary.bySmell` and the 3 largest files, because an agent reads whole files into its context.
 
 ### 4. Write the report
 
@@ -74,7 +75,7 @@ Scorecard: <P> pass, <W> warn, <F> fail, <U> unknown. Checked <date>.
 <Slow tests or builds, whether setup steps work, anything unknown, and anything you skipped. Say that the scorecard lists gaps; it does not predict how well agents will do.>
 ```
 
-"Fix first" holds at most 5 items. Rank by how often an agent hits the problem: unguarded dangerous scripts and broken feedback (`honest-exit-codes`, a missing or broken instruction file) come first, then missing commands and slow feedback (`fast-local-checks`), then doc-only rules the code breaks, then inconsistent patterns and noise, then DX gaps.
+"Fix first" holds at most 5 items. Rank by how often an agent hits the problem: unguarded dangerous scripts and broken feedback (`honest-exit-codes`, a missing or broken instruction file) come first, then missing commands and slow feedback (`fast-local-checks`, `test-mapping`), then doc-only rules the code breaks and confirmed `co-change` pairs, then inconsistent patterns, unused files and noise, then DX gaps.
 
 After the report, offer the next step in one line: fix the top items (for example, draft the missing AGENTS.md sections or a lefthook config), measure one fix with the loop in `references/readiness-checks.md`, or run `flutter-smell-scan` for code-level smells.
 

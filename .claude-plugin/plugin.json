@@ -1,6 +1,6 @@
 {
   "name": "flutter-smell-scan",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Scan a Flutter/Dart codebase for code smells and audit how ready it is for AI coding agents, with a read-only scanner whose findings Claude verifies and ranks.",
   "author": {
     "name": "Hendra Marihot",

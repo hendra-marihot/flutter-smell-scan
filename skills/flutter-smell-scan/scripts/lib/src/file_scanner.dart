@@ -6,6 +6,7 @@ import 'package:analyzer/dart/ast/ast.dart';
 import 'package:analyzer/dart/ast/visitor.dart';
 import 'package:analyzer/source/line_info.dart';
 
+import 'dart_files.dart';
 import 'model.dart';
 
 /// State-management families, detected by import URI prefix.
@@ -173,6 +174,9 @@ class FileReport {
   int changeNotifierClasses = 0;
   bool parseErrors = false;
 
+  /// Directive links to other files, for the import graph.
+  late DartLinks links;
+
   int get score =>
       findings.fold(0, (sum, f) => sum + severityWeight(f.severity));
 }
@@ -202,6 +206,7 @@ class FileScanner {
 
   FileReport scan() {
     report.lines = _lineInfo.lineCount;
+    report.links = linksOf(unit);
     _scanImports();
     _scanTodos();
     _scanSuppressions();
