@@ -16,12 +16,21 @@ The scanner does not need DCM. When `dcm` is installed, the skill also uses it f
 
 ## Install
 
-As a plugin from a local clone:
+As a plugin from GitHub:
 
 ```bash
-claude plugin marketplace add /path/to/flutter-smell-scan
+claude plugin marketplace add hendra-marihot/flutter-smell-scan
 claude plugin install flutter-smell-scan@flutter-smell-scan
 ```
+
+To update later, refresh the marketplace, then update the plugin, and restart Claude Code:
+
+```bash
+claude plugin marketplace update flutter-smell-scan
+claude plugin update flutter-smell-scan@flutter-smell-scan
+```
+
+From a local clone, pass the clone's path to `marketplace add` instead of `hendra-marihot/flutter-smell-scan`.
 
 For local development, load the checkout without installing it:
 
