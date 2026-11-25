@@ -75,6 +75,12 @@ class Thresholds {
     'state-holder-methods': 12,
     // setState() calls in one State class.
     'setstate-heavy': 8,
+    // TODO/FIXME/HACK/XXX markers in one file.
+    'todo-hotspot': 5,
+    // Lines in one block of commented-out code.
+    'commented-out-code': 5,
+    // `// ignore:` and `// ignore_for_file:` comments in one file.
+    'lint-suppression': 5,
   };
 
   final Map<String, int> values;
@@ -85,3 +91,8 @@ class Thresholds {
 /// Severity for a metric smell: high at twice the threshold, else medium.
 Severity metricSeverity(num value, num threshold) =>
     value >= threshold * 2 ? Severity.high : Severity.medium;
+
+/// Severity for a hygiene smell (TODOs, suppressions, commented-out code).
+/// These never break behaviour, so they stop at medium.
+Severity hygieneSeverity(num value, num threshold) =>
+    value >= threshold * 2 ? Severity.medium : Severity.low;

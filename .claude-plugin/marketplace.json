@@ -5,15 +5,15 @@
     "email": "hendra.marihot@gmail.com"
   },
   "metadata": {
-    "description": "Flutter/Dart code-smell scanning for Claude Code",
-    "version": "0.1.0"
+    "description": "Flutter/Dart code-smell scanning and agent-readiness audits for Claude Code",
+    "version": "0.2.0"
   },
   "plugins": [
     {
       "name": "flutter-smell-scan",
       "source": "./",
-      "description": "Find, verify and rank code smells in a Flutter or Dart project.",
-      "version": "0.1.0",
+      "description": "Find, verify and rank code smells in a Flutter or Dart project, and audit how ready it is for AI agents.",
+      "version": "0.2.0",
       "category": "development"
     }
   ]
