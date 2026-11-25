@@ -1,0 +1,15 @@
+name: smell_scan
+description: Read-only Flutter/Dart code-smell metrics scanner used by the flutter-smell-scan skill.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.8.0 <4.0.0"
+
+dependencies:
+  analyzer: ^14.7.0
+  args: ^2.7.0
+  path: ^1.9.1
+
+dev_dependencies:
+  test: ^1.33.0

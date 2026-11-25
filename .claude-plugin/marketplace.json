@@ -1,0 +1,20 @@
+{
+  "name": "flutter-smell-scan",
+  "owner": {
+    "name": "Hendra Marihot",
+    "email": "hendra.marihot@gmail.com"
+  },
+  "metadata": {
+    "description": "Flutter/Dart code-smell scanning for Claude Code",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "flutter-smell-scan",
+      "source": "./",
+      "description": "Find, verify and rank code smells in a Flutter or Dart project.",
+      "version": "0.1.0",
+      "category": "development"
+    }
+  ]
+}

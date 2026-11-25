@@ -1,0 +1,17 @@
+{
+  "name": "flutter-smell-scan",
+  "version": "0.1.0",
+  "description": "Scan a Flutter/Dart codebase for code smells with a read-only AST scanner, then let Claude verify the findings and report a ranked, file:line list.",
+  "author": {
+    "name": "Hendra Marihot",
+    "email": "hendra.marihot@gmail.com"
+  },
+  "keywords": [
+    "flutter",
+    "dart",
+    "code-smell",
+    "static-analysis",
+    "code-quality",
+    "refactoring"
+  ]
+}
