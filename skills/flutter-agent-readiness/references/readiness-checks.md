@@ -11,13 +11,15 @@ Statuses:
 - `fail`: the thing is missing completely (no instruction file, no CI, no README, no lint config, committed build output).
 - `unknown`: the scanner could not decide. Claude checks it by reading, or reports it as not checked.
 
+The scorecard is a list of gaps, not a forecast. Readiness scores (this one, Factory's Agent Readiness, and others) measure inputs such as files and config. No published study links them to how well agents do. The only way to know whether a fix helps is to run an agent on real tasks before and after it (see "Measuring a fix" at the end).
+
 "Visible to search" means tracked by git, or untracked and not ignored. ripgrep, which agent search tools use, sees the same set.
 
 ## Agent experience (AX)
 
 ### `instruction-file`
-- Checks: `CLAUDE.md`, `.claude/CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.cursorrules`, `.github/copilot-instructions.md`, `.cursor/rules/*.md(c)` and `.github/instructions/*.md`. It follows `@path` imports (so a `CLAUDE.md` that only contains `@AGENTS.md` counts as AGENTS.md). It looks for 3 sections by content: commands (a code block with `flutter`, `dart`, `make`, `./script` and similar), an architecture map (a heading such as "Architecture" or "Structure", or 3 or more `lib/...` paths), and rules (a heading such as "Rules", "Conventions", "Forbidden" or "Pitfalls", or 3 or more "never/always/must/avoid" bullets). It checks that every path in a code span (`` `scripts/x.sh` ``) and every `make X`, `melos run X` and `just X` exists.
-- Fail: no instruction file. Warn: a missing section, a reference that does not exist, or more than 500 lines in total (every session loads them).
+- Checks: `CLAUDE.md`, `.claude/CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.cursorrules`, `.github/copilot-instructions.md`, `.cursor/rules/*.md(c)` and `.github/instructions/*.md`. It follows `@path` imports (so a `CLAUDE.md` that only contains `@AGENTS.md` counts as AGENTS.md). It looks for 2 required sections by content: commands (a code block with `flutter`, `dart`, `make`, `./script` and similar) and rules or conventions (a heading such as "Rules", "Conventions", "Forbidden" or "Pitfalls", or 3 or more "never/always/must/avoid" bullets). A folder map is reported but not required: in the ETH Zurich study (arXiv 2602.11988), repository overviews did not help agents find the right files. What helped was what the agent cannot discover alone, such as non-standard tooling and conventions. It checks that every path in a code span (`` `scripts/x.sh` ``) and every `make X`, `melos run X` and `just X` exists.
+- Fail: no instruction file. Warn: a missing section, a reference that does not exist, or more than 500 lines in total. Two studies found no effect of length on adherence, so the size warning is about upkeep and token cost: OpenAI's harness-engineering team found that one big AGENTS.md "rots instantly", and context files raised agent cost by over 20% in the ETH Zurich study. The fix is a short file that links to deeper docs in `docs/`.
 - False results: placeholders (`<feature>`), globs (`*.g.dart`), suffixes (`_event.dart`), gitignored paths such as `.env`, and bare config names such as `pubspec.yaml` or `package_config.json` are skipped. Bare `.dart` and `.md` names are checked by file name anywhere in the repo. A path written relative to another folder (`../x/y.sh` in a root file) is reported as missing; it is ambiguous for agents too.
 - Claude adds: pick 3 to 5 concrete rules (for example "never call `getIt` inside a Bloc") and check them against the code with Grep. A rule the code breaks in many places is worse than no rule, because the agent sees both.
 
@@ -38,6 +40,18 @@ Statuses:
 - Scripts under a `ci/` directory, or referenced from a CI file, are listed as "run by CI". They still warn, because an agent can run them locally, but the summary says CI is their normal caller. Rank them below unguarded local scripts.
 - False results: a guard implemented in a helper the script calls.
 - Fix: refuse to run unless `CI` is set or `--confirm` is passed, and add `--dry-run`.
+
+### `fast-local-checks`
+- Checks: a shared git hook config that runs format or analyze before a commit: `lefthook.yml`, `.pre-commit-config.yaml`, `.husky/`, `.githooks/`, `.git-hooks/`, `tool/hooks/` or `scripts/hooks/`, or a hook package in a pubspec (`git_hooks`, `husky`, `lefthook_dart`, `dart_pre_commit`). It follows scripts the hook calls one level deep. A hook that exists only in `.git/hooks/` is listed but does not count, because fresh clones do not get it.
+- Warn: no shared hook, or a hook that runs neither format nor analyze.
+- Why: every readiness checklist puts fast feedback first. Without a hook, "the agent waits ten minutes for CI feedback instead of five seconds" (Factory).
+- False results: hooks installed by a tool the scanner does not know, or by `core.hooksPath` pointing at an unusual folder.
+
+### `honest-exit-codes`
+- Checks: shell scripts and Makefile recipes that run test, analyze, format or `flutter build`. A script warns when a check step is followed by `|| true`, piped (`| tee`) without `set -o pipefail`, or runs without `set -e`, without a status check (`if !`, `|| exit`, `$?`), and is not the last line. A Makefile recipe line warns with the `-` prefix or `|| true`.
+- Warn: any such step.
+- Why: a script that prints an error and exits 0 tells the agent the change works. "The agent then builds on a lie."
+- False results: a step that may fail on purpose (for example, a report-only lint run). Ask for a comment, or move it out of the check path.
 
 ### `inconsistent-patterns`
 - Checks: which library family each file uses for 6 concerns: state management, HTTP client (dio, http, chopper), dependency injection (get_it/injectable, kiwi, flutter_modular), routing (go_router, auto_route, beamer, fluro, routemaster, and imperative `Navigator.push`), serialization (json_serializable, dart_mappable, built_value, hand-written `fromJson`), and logging (logger, logging, talker, `dart:developer`, `print`/`debugPrint`). Vendored packages are skipped. `details` lists up to 20 files per family.
@@ -81,10 +95,22 @@ Statuses:
 
 | Check | What to look for |
 |---|---|
-| Rules the code breaks | Sample 3 to 5 concrete rules from the instruction file and Grep for violations |
-| Error messages | Read 5 to 10 `throw` and `Failure(...)` sites. Does each message say what failed and what to do next? |
+| Rules the code breaks | Sample 3 to 5 concrete rules from the instruction file and Grep for violations. For each rule, say whether a lint, analyzer plugin, test or CI step enforces it, or whether it is written down only. "If a rule matters, a machine checks it": a doc-only rule drifts, and a lint can carry its fix in the error message |
+| Error messages | Read 5 to 10 `throw`, `Failure(...)` and script `echo ... >&2` sites. A good message says what failed, lists the valid values or the nearest match, says what to do next, and does not dump a stack trace by default. Agents arrive with a plan, so a message that names the wrong approach works better than a hint about the right one |
 | Hidden behaviour | Code that runs because of file location, reflection, `noSuchMethod`, implicit config, or build-time magic not explained in the instruction file |
 | Misleading names | Beyond `file-name-mismatch`: classes or methods whose name says something other than what they do, in the hotspot files |
 | Dead code | `commented-out-code` findings, plus DCM `check-unused-files` / `check-unused-code` if installed. Otherwise report as not checked |
 | Slow feedback loop | Not measured. Static signs only: does the default test command also run `integration_test/`? Is there a way to run one test file? |
 | Context cost of large files | Not a separate check. Report the `long-file` count from `summary.bySmell` and the largest files, because an agent reads whole files |
+| Runtime visibility | Can an agent run the app and see what happens? Look for a documented `flutter run` target, integration or Maestro tests, and readable logs. Report what is missing |
+
+## Measuring a fix
+
+To learn whether a fix really helps, use Microsoft's DevAX loop on a small scale:
+
+1. Write 3 to 5 tasks the team really gives agents, in their own words.
+2. Run each task 3 to 5 times with the same harness and model, before the fix.
+3. Make the fix and run the same tasks again.
+4. Compare a strict pass rate (every requirement met) and the token cost. A fix that raises cost without raising the pass rate is not a fix.
+
+Several fixes that sound agent-friendly measured as neutral or worse (for example, adding an llms.txt or an extra documentation MCP server). Measure before you recommend a large change.

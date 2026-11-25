@@ -26,6 +26,8 @@ Future<Map<String, Object?>> runReadiness({
     taskCommandsCheck(c),
     nonInteractiveScriptsCheck(c),
     dangerousOpsCheck(c),
+    fastLocalChecksCheck(c),
+    honestExitCodesCheck(c),
     inconsistentPatternsCheck(c),
     generatedNoiseCheck(c),
     lintConfigCheck(c),

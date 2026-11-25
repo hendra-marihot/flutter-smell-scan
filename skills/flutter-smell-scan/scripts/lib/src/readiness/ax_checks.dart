@@ -2,12 +2,17 @@
 /// without guessing.
 library;
 
+import 'dart:io';
+
 import 'package:path/path.dart' as p;
 
 import 'instructions.dart';
 import 'model.dart';
 import 'repo.dart';
 
+/// Past this size an instruction file is hard to keep current, and every
+/// session pays for it in tokens. Controlled studies found no effect of
+/// length on adherence, so this is about upkeep and cost, not obedience.
 const _maxInstructionLines = 500;
 
 Future<ReadinessCheck> instructionFileCheck(ReadinessContext c) async {
@@ -23,43 +28,50 @@ Future<ReadinessCheck> instructionFileCheck(ReadinessContext c) async {
             '.cursor/rules/ and .github/instructions/.',
       ],
       fix:
-          'Add AGENTS.md (and a CLAUDE.md that contains `@AGENTS.md`) with '
-          'the commands to test, analyze, format and generate code, a map of '
-          'the main folders, and the project rules.',
+          'Add a short AGENTS.md (and a CLAUDE.md that contains '
+          '`@AGENTS.md`) with the commands to test, analyze, format and '
+          'generate code, and the conventions and non-standard tooling an '
+          'agent cannot discover from the code. Link to deeper docs instead '
+          'of copying them.',
     );
   }
   final a = await analyzeInstructions(c.repo, docs, c.packages);
+  // A folder overview is not required: in controlled studies, repository
+  // overviews did not help agents find files. Commands and conventions the
+  // code does not show are what help.
   final missing = [
     if (!a.hasCommands) 'commands',
-    if (!a.hasArchitecture) 'architecture map',
-    if (!a.hasRules) 'project rules',
+    if (!a.hasRules) 'project rules or conventions',
   ];
   final problems = [
     if (missing.isNotEmpty) 'missing ${missing.join(', ')}',
     if (a.broken.isNotEmpty)
       '${a.broken.length} reference(s) that do not exist',
     if (a.totalLines > _maxInstructionLines)
-      '${a.totalLines} lines, which every session loads into context',
+      '${a.totalLines} lines in total, which is hard to keep current and '
+          'costs tokens in every session',
   ];
   return ReadinessCheck(
     id: 'instruction-file',
     area: 'ax',
     status: problems.isEmpty ? CheckStatus.pass : CheckStatus.warn,
     summary: problems.isEmpty
-        ? 'Instruction files cover commands, architecture and rules, and '
-              'every path they mention exists.'
+        ? 'Instruction files give commands and project rules, and every '
+              'path they mention exists.'
         : 'Instruction files have problems: ${problems.join('; ')}.',
     evidence: [
       for (final d in docs)
         '${d.path} (${d.lines} lines'
             '${d.importedBy == null ? '' : ', imported by ${d.importedBy}'})',
-      'Sections: commands ${a.hasCommands ? 'yes' : 'no'}, architecture '
-          '${a.hasArchitecture ? 'yes' : 'no'}, rules ${a.hasRules ? 'yes' : 'no'}.',
+      'Sections: commands ${a.hasCommands ? 'yes' : 'no'}, rules '
+          '${a.hasRules ? 'yes' : 'no'}, folder map '
+          '${a.hasArchitecture ? 'yes' : 'no'} (not required).',
       for (final b in a.broken.take(15)) 'Does not exist: $b',
     ],
     fix:
-        'Add the missing sections, and fix or remove references to paths '
-        'and commands that do not exist.',
+        'Add the missing sections, fix or remove references to paths and '
+        'commands that do not exist, and move long reference material into '
+        'docs/ with a link from the instruction file.',
     details: {'broken': a.broken, 'totalLines': a.totalLines},
   );
 }
@@ -500,5 +512,162 @@ ReadinessCheck generatedNoiseCheck(ReadinessContext c) {
       'generatedLines': generatedLines,
       'dartLines': dartLines,
     },
+  );
+}
+
+/// A command that checks the code: test, analyze, format, or a build.
+final _checkCommand = RegExp(
+  '${taskPatterns['test']!.pattern}|${taskPatterns['analyze']!.pattern}|'
+  '${taskPatterns['format']!.pattern}|'
+  r'\b(?:fvm\s+)?flutter\s+build\b',
+);
+
+/// Shared hook configs, relative to the root.
+final _hookConfig = RegExp(
+  r'^(\.?lefthook(-local)?\.ya?ml|\.pre-commit-config\.ya?ml|'
+  r'\.husky/[^/_][^/]*|\.githooks/[^/]+|\.git-hooks/[^/]+|'
+  r'(tool|scripts)/(git_)?hooks/[^/]+)$',
+);
+
+/// Dart packages that install git hooks from pubspec.yaml.
+const _hookPackages = [
+  'git_hooks',
+  'husky',
+  'lefthook_dart',
+  'dart_pre_commit',
+];
+
+ReadinessCheck fastLocalChecksCheck(ReadinessContext c) {
+  final repo = c.repo;
+  final hookFiles = [
+    for (final f in repo.files)
+      if (_hookConfig.hasMatch(f)) f,
+  ];
+  final hookPackages = {
+    for (final pkg in c.packages)
+      if (!pkg.vendored)
+        for (final name in _hookPackages)
+          if (pkg.dependsOn(name)) name,
+  };
+  // The hook text, plus one level of scripts it calls.
+  final text = StringBuffer();
+  for (final f in hookFiles) {
+    final body = repo.read(f) ?? '';
+    text.writeln(body);
+    for (final m in RegExp(
+      r'(?:\./)?((?:scripts|tool)/[\w./-]+\.(?:sh|dart|py))',
+    ).allMatches(body)) {
+      text.writeln(repo.read(m.group(1)!) ?? '');
+    }
+  }
+  final runs = [
+    for (final task in const ['format', 'analyze', 'test'])
+      if (taskPatterns[task]!.hasMatch('$text')) task,
+  ];
+  final localHook = File(
+    p.join(repo.root, '.git', 'hooks', 'pre-commit'),
+  ).existsSync();
+
+  final shared = hookFiles.isNotEmpty || hookPackages.isNotEmpty;
+  final status = shared && (runs.contains('format') || runs.contains('analyze'))
+      ? CheckStatus.pass
+      : CheckStatus.warn;
+  return ReadinessCheck(
+    id: 'fast-local-checks',
+    area: 'ax',
+    status: status,
+    summary: status == CheckStatus.pass
+        ? 'A shared pre-commit hook runs ${runs.join(', ')}, so an agent gets '
+              'feedback in seconds instead of waiting for CI.'
+        : shared
+        ? 'Git hooks are set up but run neither format nor analyze.'
+        : 'No shared pre-commit hook, so an agent learns about format and '
+              'lint errors only when CI fails, minutes later.',
+    evidence: [
+      if (hookFiles.isNotEmpty) 'Hook config: ${hookFiles.take(5).join(', ')}.',
+      if (hookPackages.isNotEmpty)
+        'Hook packages in pubspec: ${hookPackages.join(', ')}.',
+      if (shared)
+        'Hooks run: ${runs.isEmpty ? 'none of format, analyze, test' : runs.join(', ')}.',
+      if (localHook && !shared)
+        '.git/hooks/pre-commit exists on this machine only; it is not '
+            'shared with the team or with agents in fresh clones.',
+    ],
+    fix:
+        'Add a shared pre-commit hook (lefthook.yml or .githooks/ with '
+        '`git config core.hooksPath`) that runs `dart format` and '
+        '`dart analyze` on the staged files. Keep it under a few seconds.',
+  );
+}
+
+ReadinessCheck honestExitCodesCheck(ReadinessContext c) {
+  final problems = <String>[];
+
+  for (final s in _scripts(c).where((s) => s.isShell)) {
+    final lines = joinContinuations(stripHashComments(s.text)).split('\n');
+    final errexit = RegExp(
+      r'^\s*set\s+-[a-zA-Z]*e|set\s+-o\s+errexit|^#!.*\s-[a-zA-Z]*e\b',
+      multiLine: true,
+    ).hasMatch(s.text);
+    final pipefail = s.text.contains('pipefail');
+    final lastLine = lines.lastIndexWhere((l) => l.trim().isNotEmpty);
+    for (var i = 0; i < lines.length; i++) {
+      final line = lines[i];
+      final m = _checkCommand.firstMatch(line);
+      if (m == null) continue;
+      final at = '${s.path}:${i + 1} (`${m.group(0)!.trim()}`)';
+      final after = line.substring(m.end);
+      final guarded =
+          RegExp(
+            r'^\s*(if|until|while|elif)\b|!\s*$',
+          ).hasMatch(line.substring(0, m.start)) ||
+          RegExp(r'\|\|\s*(exit|return|\{|fail|die|echo)').hasMatch(after) ||
+          (i + 1 < lines.length && lines[i + 1].contains(r'$?'));
+      if (RegExp(r'\|\|\s*(true|:)\s*($|;|#)').hasMatch(after)) {
+        problems.add('$at: `|| true` hides the failure.');
+      } else if (RegExp(r'(?<!\|)\|(?!\|)').hasMatch(after) && !pipefail) {
+        problems.add(
+          '$at: piped without `set -o pipefail`, so the script reports the '
+          'last command in the pipe, not the check.',
+        );
+      } else if (!errexit && !guarded && i != lastLine) {
+        problems.add(
+          '$at: no `set -e` and no status check, so the script goes on and '
+          'can exit 0 after this fails.',
+        );
+      }
+    }
+  }
+
+  final mk = c.repo.read('Makefile') ?? c.repo.read('makefile');
+  if (mk != null) {
+    final lines = mk.split('\n');
+    for (var i = 0; i < lines.length; i++) {
+      final line = lines[i];
+      if (!line.startsWith('\t') || !_checkCommand.hasMatch(line)) continue;
+      if (RegExp(r'^\t\s*[@]?-').hasMatch(line)) {
+        problems.add(
+          'Makefile:${i + 1}: the `-` prefix makes make ignore this failure.',
+        );
+      } else if (RegExp(r'\|\|\s*(true|:)\s*$').hasMatch(line)) {
+        problems.add('Makefile:${i + 1}: `|| true` hides the failure.');
+      }
+    }
+  }
+
+  return ReadinessCheck(
+    id: 'honest-exit-codes',
+    area: 'ax',
+    status: problems.isEmpty ? CheckStatus.pass : CheckStatus.warn,
+    summary: problems.isEmpty
+        ? 'Scripts that run tests, analyze, format or builds pass their '
+              'failures on as a non-zero exit code.'
+        : '${problems.length} place(s) can hide a failed check behind exit '
+              'code 0. An agent then reports a broken change as working.',
+    evidence: problems.take(15).toList(),
+    fix:
+        'Start shell scripts with `set -euo pipefail`, remove `|| true` and '
+        'the make `-` prefix from check steps, and check the status of any '
+        'step that must not stop the script.',
   );
 }

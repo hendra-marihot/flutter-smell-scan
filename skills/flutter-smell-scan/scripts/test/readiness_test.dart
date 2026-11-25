@@ -122,6 +122,96 @@ Copy `.env` first. See `lib/<feature>/` and `*.g.dart`.
     });
   });
 
+  test('instruction-file does not require a folder map', () async {
+    final cs = await checks({
+      'pubspec.yaml': _pubspec,
+      'AGENTS.md':
+          '```\nflutter test\n```\n\n## Rules\n\n- Never call the API '
+          'from a widget.\n',
+    });
+    expect(status(cs, 'instruction-file'), 'pass');
+  });
+
+  group('fast-local-checks', () {
+    test('warns without a shared hook', () async {
+      final cs = await checks({'pubspec.yaml': _pubspec});
+      expect(status(cs, 'fast-local-checks'), 'warn');
+    });
+
+    test('passes when lefthook runs format', () async {
+      final cs = await checks({
+        'pubspec.yaml': _pubspec,
+        'lefthook.yml':
+            'pre-commit:\n  commands:\n    fmt:\n      run: dart format {staged_files}\n',
+      });
+      expect(status(cs, 'fast-local-checks'), 'pass');
+    });
+
+    test('follows a hook into the script it calls', () async {
+      final cs = await checks({
+        'pubspec.yaml': _pubspec,
+        '.githooks/pre-commit': '#!/bin/sh\n./scripts/check.sh\n',
+        'scripts/check.sh': '#!/bin/sh\nset -e\ndart analyze\n',
+      });
+      expect(status(cs, 'fast-local-checks'), 'pass');
+    });
+
+    test('warns when the hook runs no check', () async {
+      final cs = await checks({
+        'pubspec.yaml': _pubspec,
+        '.githooks/pre-commit': '#!/bin/sh\necho hi\n',
+      });
+      expect(status(cs, 'fast-local-checks'), 'warn');
+      expect(
+        cs['fast-local-checks']!['summary'],
+        contains('run neither format nor analyze'),
+      );
+    });
+  });
+
+  group('honest-exit-codes', () {
+    test('finds checks whose failure is hidden', () async {
+      final cs = await checks({
+        'pubspec.yaml': _pubspec,
+        'scripts/a.sh': '#!/bin/sh\nflutter test\necho done\n',
+        'scripts/b.sh': '#!/bin/sh\nset -e\ndart analyze || true\n',
+        'scripts/c.sh':
+            '#!/bin/sh\nset -e\nflutter test | tee out.log\necho ok\n',
+        'Makefile': 'lint:\n\t-dart analyze\n',
+      });
+      expect(status(cs, 'honest-exit-codes'), 'warn');
+      final ev = evidence(cs, 'honest-exit-codes');
+      expect(
+        ev,
+        contains(startsWith('scripts/a.sh:2 (`flutter test`): no `set -e`')),
+      );
+      expect(
+        ev,
+        contains(startsWith('scripts/b.sh:3 (`dart analyze`): `|| true`')),
+      );
+      expect(
+        ev,
+        contains(startsWith('scripts/c.sh:3 (`flutter test`): piped')),
+      );
+      expect(ev, contains(startsWith('Makefile:2: the `-` prefix')));
+    });
+
+    test(
+      'accepts errexit with pipefail, a last-line check, and if-guards',
+      () async {
+        final cs = await checks({
+          'pubspec.yaml': _pubspec,
+          'scripts/a.sh':
+              '#!/bin/bash\nset -euo pipefail\nflutter test | tee out.log\necho ok\n',
+          'scripts/b.sh': '#!/bin/sh\necho start\ndart analyze\n',
+          'scripts/c.sh':
+              '#!/bin/sh\nif ! flutter test; then exit 1; fi\necho ok\n',
+        });
+        expect(status(cs, 'honest-exit-codes'), 'pass');
+      },
+    );
+  });
+
   group('task-commands', () {
     test('fails when neither test nor analyze is documented', () async {
       final cs = await checks({'pubspec.yaml': 'name: lib_only\n'});

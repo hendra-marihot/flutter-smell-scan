@@ -87,10 +87,10 @@ With `--readiness`, the report also has a scorecard. See [`skills/flutter-agent-
 
 | Area | Checks |
 |---|---|
-| Agent experience | `instruction-file`, `task-commands`, `non-interactive-scripts`, `unguarded-dangerous-ops`, `inconsistent-patterns`, `generated-noise` |
+| Agent experience | `instruction-file`, `task-commands`, `non-interactive-scripts`, `unguarded-dangerous-ops`, `fast-local-checks`, `honest-exit-codes`, `inconsistent-patterns`, `generated-noise` |
 | Developer experience | `lint-config`, `format`, `ci-parity`, `setup-docs` |
 
-The scorecard reads files and runs only `git ls-files`, `git check-ignore`, and `dart format --output=none`. It never runs tests, builds or setup steps, so it does not measure test speed or whether setup works.
+The scorecard reads files and runs only `git ls-files`, `git check-ignore`, and `dart format --output=none`. It never runs tests, builds or setup steps, so it does not measure test speed or whether setup works. Like other readiness scores, it lists gaps in files and config; it does not predict how well an agent will do.
 
 Generated files (`*.g.dart`, `*.freezed.dart`, `*.mocks.dart`, and others) and platform folders are skipped.
 
