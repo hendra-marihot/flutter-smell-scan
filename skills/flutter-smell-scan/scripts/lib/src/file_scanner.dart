@@ -24,6 +24,42 @@ const stateFamilies = <String, List<String>>{
   'signals': ['package:signals/', 'package:signals_flutter/'],
 };
 
+/// Library families per concern, detected by import URI prefix. A project
+/// that uses two or more families for one concern solves the same problem in
+/// different ways, and an agent may copy the wrong one. Some families are
+/// detected by calls instead of imports; see [_PatternCallVisitor].
+const patternFamilies = <String, Map<String, List<String>>>{
+  'state-management': stateFamilies,
+  'http-client': {
+    'dio': ['package:dio/', 'package:retrofit/'],
+    'http': ['package:http/'],
+    'chopper': ['package:chopper/'],
+  },
+  'dependency-injection': {
+    'get_it': ['package:get_it/', 'package:injectable/'],
+    'kiwi': ['package:kiwi/'],
+    'flutter_modular': ['package:flutter_modular/'],
+  },
+  'routing': {
+    'go_router': ['package:go_router/'],
+    'auto_route': ['package:auto_route/'],
+    'beamer': ['package:beamer/'],
+    'fluro': ['package:fluro/'],
+    'routemaster': ['package:routemaster/'],
+  },
+  'serialization': {
+    'json_serializable': ['package:json_annotation/'],
+    'dart_mappable': ['package:dart_mappable/'],
+    'built_value': ['package:built_value/'],
+  },
+  'logging': {
+    'logger': ['package:logger/'],
+    'logging': ['package:logging/'],
+    'talker': ['package:talker/', 'package:talker_flutter/'],
+    'dart:developer': ['dart:developer'],
+  },
+};
+
 /// Packages that belong in the data layer, not in widget files.
 const _dataLayerImports = [
   'package:dio/',
@@ -93,6 +129,20 @@ const _lowCostDisposables = {
 
 final _todoPattern = RegExp(r'//+\s*(TODO|FIXME|HACK|XXX)\b', caseSensitive: false);
 
+final _suppressionPattern = RegExp(r'//\s*ignore(_for_file)?\s*:\s*(.*)$');
+
+/// A `//` comment line (not `///` doc comments), with its text in group 1.
+final _lineComment = RegExp(r'^\s*//(?!/)\s?(.*)$');
+
+/// Comment text that reads like Dart code rather than prose.
+final _codeLike = RegExp(
+  r'^(\}|\{|\)|\]|@override\b|return\b|final\b|var\b|const\b|late\b|await\b|'
+  r'import\b|export\b|class\b|if\s*\(|else\b|for\s*\(|while\s*\(|switch\s*\(|'
+  r'case\b|try\b|throw\b|setState\(|super\.|this\.|_\w+\s*=|'
+  r'[\w.<>?]+\s+\w+\s*(=|;|\()|[\w.!?]+\(.*\)\s*[;,]?$|'
+  r'.*[;{\[(]\s*$|\w+:\s.*,$)',
+);
+
 class TodoMarker {
   TodoMarker(this.line, this.text);
   final int line;
@@ -111,6 +161,13 @@ class FileReport {
   final findings = <Finding>[];
   final imports = <String>{};
   final stateFamilies = <String>{};
+
+  /// Concern (`routing`, `logging`, ...) to the families this file uses.
+  final families = <String, Set<String>>{};
+
+  /// Lint rule name to the number of `// ignore` comments for it.
+  final suppressedRules = <String, int>{};
+  int suppressions = 0;
   final todos = <TodoMarker>[];
   int setStateClasses = 0;
   int changeNotifierClasses = 0;
@@ -147,6 +204,14 @@ class FileScanner {
     report.lines = _lineInfo.lineCount;
     _scanImports();
     _scanTodos();
+    _scanSuppressions();
+    _scanCommentedOutCode();
+    _scanFileName();
+    final calls = _PatternCallVisitor();
+    unit.accept(calls);
+    if (calls.navigatorPush) _addFamily('routing', 'Navigator.push');
+    if (calls.handWrittenFromJson) _addFamily('serialization', 'hand-written');
+    if (calls.printCall) _addFamily('logging', 'print/debugPrint');
 
     if (report.lines > t['long-file']) {
       report.findings.add(
@@ -210,6 +275,8 @@ class FileScanner {
           mixins: const [],
           members: decl.body.members,
         );
+      } else if (decl is TopLevelVariableDeclaration) {
+        _scanMutableGlobal(decl.variables, 'Top-level variable', null);
       } else if (decl is FunctionDeclaration) {
         report.functions++;
         _scanFunction(
@@ -236,11 +303,21 @@ class FileScanner {
       stateFamilies.forEach((family, prefixes) {
         if (prefixes.any(uri.startsWith)) report.stateFamilies.add(family);
       });
+      patternFamilies.forEach((concern, families) {
+        families.forEach((family, prefixes) {
+          if (prefixes.any(uri.startsWith)) _addFamily(concern, family);
+        });
+      });
     }
   }
 
+  void _addFamily(String concern, String family) =>
+      report.families.putIfAbsent(concern, () => {}).add(family);
+
+  late final List<String> _sourceLines = content.split('\n');
+
   void _scanTodos() {
-    final lines = content.split('\n');
+    final lines = _sourceLines;
     for (var i = 0; i < lines.length; i++) {
       final m = _todoPattern.firstMatch(lines[i]);
       if (m != null) {
@@ -249,6 +326,232 @@ class FileScanner {
           TodoMarker(i + 1, text.length > 120 ? text.substring(0, 120) : text),
         );
       }
+    }
+    final count = report.todos.length;
+    if (count > t['todo-hotspot']) {
+      report.findings.add(
+        Finding(
+          smell: 'todo-hotspot',
+          severity: hygieneSeverity(count, t['todo-hotspot']),
+          file: path,
+          line: report.todos.first.line,
+          value: count,
+          threshold: t['todo-hotspot'],
+          message:
+              'File has $count TODO/FIXME/HACK markers. The line points at the '
+              'first one; see `todos` in the report for the text.',
+        ),
+      );
+    }
+  }
+
+  /// Counts `// ignore:` and `// ignore_for_file:` comments and the rules
+  /// they silence.
+  void _scanSuppressions() {
+    int? firstLine;
+    for (var i = 0; i < _sourceLines.length; i++) {
+      final m = _suppressionPattern.firstMatch(_sourceLines[i]);
+      if (m == null) continue;
+      firstLine ??= i + 1;
+      report.suppressions++;
+      for (final rule in m.group(2)!.split(',')) {
+        final name = rule.trim().split(RegExp(r'\s')).first;
+        if (name.isEmpty) continue;
+        report.suppressedRules[name] = (report.suppressedRules[name] ?? 0) + 1;
+      }
+    }
+    final count = report.suppressions;
+    if (count > t['lint-suppression']) {
+      final rules = report.suppressedRules.keys.take(5).join(', ');
+      report.findings.add(
+        Finding(
+          smell: 'lint-suppression',
+          severity: hygieneSeverity(count, t['lint-suppression']),
+          file: path,
+          line: firstLine!,
+          value: count,
+          threshold: t['lint-suppression'],
+          message: 'File silences the analyzer $count times ($rules).',
+        ),
+      );
+    }
+  }
+
+  /// Blocks of `//` comments whose lines read like code. Doc comments (`///`)
+  /// and prose comments are skipped.
+  void _scanCommentedOutCode() {
+    final minLines = t['commented-out-code'];
+    var start = -1;
+    var codeLines = 0;
+    var blockLines = 0;
+
+    void flush() {
+      if (start >= 0 &&
+          blockLines >= minLines &&
+          codeLines >= minLines &&
+          codeLines * 10 >= blockLines * 6) {
+        report.findings.add(
+          Finding(
+            smell: 'commented-out-code',
+            severity: hygieneSeverity(blockLines, minLines),
+            file: path,
+            line: start + 1,
+            value: blockLines,
+            threshold: minLines,
+            message:
+                '$blockLines lines of commented-out code. An agent can read '
+                'it as live code; delete it (git keeps the history).',
+          ),
+        );
+      }
+      start = -1;
+      codeLines = 0;
+      blockLines = 0;
+    }
+
+    for (var i = 0; i < _sourceLines.length; i++) {
+      final m = _lineComment.firstMatch(_sourceLines[i]);
+      if (m == null) {
+        flush();
+        continue;
+      }
+      // `//   // foo();` is code that was commented out twice.
+      final text = m.group(1)!.trim().replaceFirst(RegExp(r'^(//+\s*)+'), '');
+      // Suppressions and TODOs are neither code nor prose; they neither
+      // count nor end a block.
+      if (text.startsWith('ignore') || _todoPattern.hasMatch(_sourceLines[i])) {
+        continue;
+      }
+      if (start < 0) start = i;
+      if (text.isEmpty) continue;
+      blockLines++;
+      if (_codeLike.hasMatch(text)) codeLines++;
+    }
+    flush();
+  }
+
+  /// Role words in a file name that promise a kind of class. A file named
+  /// `x_bloc.dart` that declares only a Cubit misleads the reader.
+  static const _roleWords = {
+    'screen', 'page', 'bloc', 'cubit', 'dialog', 'repository', 'service',
+    'controller', 'notifier',
+  };
+
+  /// File-name words that name a kind of declaration, not one declaration.
+  static const _collectionWords = {
+    'enums', 'typedefs', 'types', 'functions', 'models', 'constants', 'consts',
+    'utils', 'helpers', 'extensions', 'exceptions', 'errors', 'mixins', 'io',
+    'web', 'stub', 'native', 'common', 'base', 'shared',
+  };
+
+  /// A file whose name does not describe its public declarations. Part files,
+  /// barrels, files with 3+ public types (collections), and files that only
+  /// declare extensions are skipped.
+  void _scanFileName() {
+    if (unit.directives.any((d) => d is PartOfDirective)) return;
+    final base = path.split('/').last;
+    if (!base.endsWith('.dart') || RegExp(r'^main(_\w+)?\.dart$').hasMatch(base)) {
+      return;
+    }
+    final names = <String>[];
+    var onlyExtensions = true;
+    int? firstLine;
+    for (final d in unit.declarations) {
+      if (d is! ExtensionDeclaration) onlyExtensions = false;
+      final name = switch (d) {
+        ClassDeclaration() => d.namePart.typeName.lexeme,
+        MixinDeclaration() => d.name.lexeme,
+        EnumDeclaration() => d.namePart.typeName.lexeme,
+        ExtensionTypeDeclaration() => d.namePart.typeName.lexeme,
+        ExtensionDeclaration() => d.name?.lexeme,
+        GenericTypeAlias() => d.name.lexeme,
+        _ => null,
+      };
+      if (name == null || name.startsWith('_')) continue;
+      names.add(name);
+      firstLine ??= _line(d.offset);
+    }
+    if (names.isEmpty || names.length >= 3 || onlyExtensions) return;
+    // A script with a top-level main() is named for what it does.
+    if (unit.declarations.any(
+      (d) => d is FunctionDeclaration && d.name.lexeme == 'main',
+    )) {
+      return;
+    }
+    final fileWords = base
+        .substring(0, base.length - 5)
+        .split(RegExp(r'[_.]'))
+        .where((w) => w.isNotEmpty)
+        .toList();
+    // `enums.dart`, `typedefs.dart`, `_functions_io.dart` name a kind of
+    // declaration, not one declaration.
+    if (fileWords.every(_collectionWords.contains)) return;
+    final declWords = [for (final n in names) _camelWords(n)];
+
+    bool has(List<String> words, String w) =>
+        words.any((d) => d.startsWith(w) || w.startsWith(d));
+
+    // The file name promises a role (screen, bloc, ...) no declaration has.
+    final role = fileWords.last;
+    final brokenRole =
+        _roleWords.contains(role) && !declWords.any((ws) => ws.contains(role));
+    // Most words of the file name appear in some declaration's name.
+    final described = declWords.any((ws) {
+      final matched = fileWords.where((w) => has(ws, w)).length;
+      return matched * 10 >= fileWords.length * 6;
+    });
+    if (described && !brokenRole) return;
+
+    report.findings.add(
+      Finding(
+        smell: 'file-name-mismatch',
+        severity: Severity.low,
+        file: path,
+        line: firstLine!,
+        symbol: names.first,
+        value: names.length,
+        message: brokenRole
+            ? 'File name `$base` says `$role`, but it declares '
+                  '${names.join(', ')}. An agent will expect a $role here.'
+            : 'File name `$base` does not describe its public '
+                  'declaration(s): ${names.join(', ')}. An agent searching by '
+                  'file name will not find them.',
+      ),
+    );
+  }
+
+  /// `CardDetailScreen` gives `[card, detail, screen]`; `MSpacer` gives
+  /// `[m, spacer]`; `HTTPClient` gives `[http, client]`.
+  static List<String> _camelWords(String name) => RegExp(
+    r'[A-Z]+(?=[A-Z][a-z]|\d|$)|[A-Z]?[a-z]+|\d+',
+  ).allMatches(name).map((m) => m.group(0)!.toLowerCase()).toList();
+
+  /// Top-level variables and static fields that are not final or const.
+  void _scanMutableGlobal(
+    VariableDeclarationList list,
+    String kind,
+    String? className,
+  ) {
+    if (list.isFinal || list.isConst) return;
+    for (final v in list.variables) {
+      final field = v.name.lexeme;
+      final name = className == null ? field : '$className.$field';
+      report.findings.add(
+        Finding(
+          smell: 'mutable-global-state',
+          // A private field (often a lazy singleton or cache) can only be
+          // changed from its own library, so it is lower risk.
+          severity: field.startsWith('_') || (className?.startsWith('_') ?? false)
+              ? Severity.low
+              : Severity.medium,
+          file: path,
+          line: _line(v.offset),
+          symbol: name,
+          message:
+              '$kind `$name` can be changed from anywhere. Tests and screens '
+              'that share it affect each other.',
+        ),
+      );
     }
   }
 
@@ -360,7 +663,9 @@ class FileScanner {
 
     // Functions inside the class.
     for (final m in members) {
-      if (m is MethodDeclaration) {
+      if (m is FieldDeclaration && m.isStatic) {
+        _scanMutableGlobal(m.fields, 'Static field', name);
+      } else if (m is MethodDeclaration) {
         report.functions++;
         final isBuild = _isBuildMethod(m);
         _scanFunction(
@@ -918,6 +1223,42 @@ class _ReleaseVisitor extends RecursiveAstVisitor<void> {
       if (r != null) receivers.add(r);
     }
     super.visitMethodInvocation(node);
+  }
+}
+
+/// Pattern families that show up as calls, not imports: imperative
+/// `Navigator.push*`, hand-written `fromJson` factories, and print logging.
+class _PatternCallVisitor extends RecursiveAstVisitor<void> {
+  bool navigatorPush = false;
+  bool handWrittenFromJson = false;
+  bool printCall = false;
+
+  @override
+  void visitMethodInvocation(MethodInvocation node) {
+    final name = node.methodName.name;
+    final target = node.target;
+    if (target == null && (name == 'print' || name == 'debugPrint')) {
+      printCall = true;
+    } else if (name.startsWith('push') && target != null) {
+      final t = target is MethodInvocation ? target.target : target;
+      if (t is SimpleIdentifier && t.name == 'Navigator') navigatorPush = true;
+    }
+    super.visitMethodInvocation(node);
+  }
+
+  @override
+  void visitConstructorDeclaration(ConstructorDeclaration node) {
+    if (node.factoryKeyword != null &&
+        node.name?.lexeme == 'fromJson' &&
+        node.redirectedConstructor == null) {
+      final body = node.body;
+      final src = body.toSource();
+      // json_serializable delegates to a generated `_$XFromJson(json)`.
+      if (!src.contains(r'_$') && body is! EmptyFunctionBody) {
+        handWrittenFromJson = true;
+      }
+    }
+    super.visitConstructorDeclaration(node);
   }
 }
 

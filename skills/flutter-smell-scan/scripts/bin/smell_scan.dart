@@ -27,6 +27,19 @@ Future<void> main(List<String> argv) async {
       help: 'Run `dart analyze` and include its diagnostics.',
     )
     ..addOption('top', defaultsTo: '15', help: 'Number of hotspot files.')
+    ..addFlag(
+      'readiness',
+      help:
+          'Add the agent-readiness scorecard (instruction files, commands, '
+          'scripts, CI, lint config, formatting) to the report.',
+    )
+    ..addFlag(
+      'format',
+      defaultsTo: true,
+      help:
+          'With --readiness, run `dart format --output=none` to count '
+          'unformatted files. Writes nothing.',
+    )
     ..addMultiOption(
       'set',
       help:
@@ -87,6 +100,8 @@ Future<void> main(List<String> argv) async {
       includeTests: args['include-tests'] as bool,
       runAnalyzer: args['analyze'] as bool,
       top: int.tryParse(args['top'] as String) ?? 15,
+      readiness: args['readiness'] as bool,
+      formatCheck: args['format'] as bool,
       thresholds: Thresholds(overrides),
     ),
   );
@@ -108,4 +123,12 @@ Future<void> main(List<String> argv) async {
     'analyzer: ${analyzer['status']}'
     '${analyzer['total'] != null ? ' (${analyzer['total']} diagnostics)' : ''}',
   );
+  final readiness = result.json['readiness'] as Map<String, Object?>?;
+  if (readiness != null) {
+    final r = readiness['summary']! as Map<String, Object?>;
+    stdout.writeln(
+      'readiness: pass ${r['pass']}, warn ${r['warn']}, fail ${r['fail']}, '
+      'unknown ${r['unknown']}',
+    );
+  }
 }

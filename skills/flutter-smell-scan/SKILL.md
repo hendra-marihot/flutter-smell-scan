@@ -1,6 +1,6 @@
 ---
 name: flutter-smell-scan
-description: Scan a Flutter or Dart codebase for code smells and return a ranked, verified list with file:line for each finding. A bundled read-only scanner measures size, complexity, nesting, widget-helper methods, undisposed controllers, swallowed exceptions, data calls inside widgets, and mixed state management; Claude then checks the high findings against the source and reads the worst files for smells a metric cannot see. Use this whenever the user asks to find code smells, scan or audit a Flutter/Dart project's code quality, find refactoring hotspots, "what is wrong with this codebase", "where should we refactor first", or to check a project they just inherited, even if they don't say "smell". Also use it to scan only the files a branch changed. Not for line-by-line PR comments (use a PR review skill), for planning and costing tech-debt work (tech-debt-assessment), for carrying out a refactor (refactor), or for system-level architecture decisions (architecture-review).
+description: Scan a Flutter or Dart codebase for code smells and return a ranked, verified list with file:line for each finding. A bundled read-only scanner measures size, complexity, nesting, widget-helper methods, undisposed controllers, swallowed exceptions, data calls inside widgets, mixed state management, mutable global state, commented-out code, TODO and lint-suppression hotspots, and misleading file names; Claude then checks the high findings against the source and reads the worst files for smells a metric cannot see. Use this whenever the user asks to find code smells, scan or audit a Flutter/Dart project's code quality, find refactoring hotspots, "what is wrong with this codebase", "where should we refactor first", or to check a project they just inherited, even if they don't say "smell". Also use it to scan only the files a branch changed. Not for line-by-line PR comments (use a PR review skill), for planning and costing tech-debt work (tech-debt-assessment), for carrying out a refactor (refactor), or for system-level architecture decisions (architecture-review), or for checking how ready a repo is for AI agents (flutter-agent-readiness).
 ---
 
 # Flutter Smell Scan
@@ -79,7 +79,7 @@ Dropped <K> false positives after checking the source.
 |---|---|---|
 
 ## Not checked
-<What this scan cannot see: duplication without DCM, runtime behaviour, test quality, and anything you skipped.>
+<What this scan cannot see: duplication without DCM, runtime behaviour, test quality, and anything you skipped. For instruction files, scripts, CI and lint config, suggest the flutter-agent-readiness skill.>
 ```
 
 "Fix first" holds at most 5 items: the verified findings that cost the most (leaks, swallowed errors and layer leaks come before size metrics). Each item names the fix, not only the problem.

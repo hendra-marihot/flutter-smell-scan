@@ -278,4 +278,162 @@ class W extends StatelessWidget {
     );
     expect((json['analyzer']! as Map)['status'], 'skipped');
   });
+
+  group('todo-hotspot', () {
+    test('flags a file with more TODOs than the threshold, capped at medium',
+        () {
+      final code = List.generate(12, (i) => '// TODO: thing $i').join('\n');
+      final hit = of(scan(code, t: {'todo-hotspot': 5}), 'todo-hotspot').single;
+      expect(hit.value, 12);
+      expect(hit.line, 1);
+      expect(hit.severity, Severity.medium);
+    });
+
+    test('ignores a file at the threshold', () {
+      final code = List.generate(5, (i) => '// TODO: thing $i').join('\n');
+      expect(of(scan(code), 'todo-hotspot'), isEmpty);
+    });
+  });
+
+  test('lint-suppression counts ignore comments and the rules they silence',
+      () {
+    final fs = scan('''
+// ignore_for_file: avoid_print, unused_element
+void f() {
+  // ignore: avoid_print
+  print(1);
+  // ignore: avoid_print
+  print(2);
+}
+''', t: {'lint-suppression': 2});
+    final hit = of(fs, 'lint-suppression').single;
+    expect(hit.value, 3);
+    expect(hit.line, 1);
+    expect(hit.severity, Severity.low);
+    expect(hit.message, contains('avoid_print'));
+  });
+
+  group('commented-out-code', () {
+    test('flags a block of commented code, including nested comments', () {
+      final fs = scan('''
+void f() {
+  // final a = load();
+  // if (a.isEmpty) {
+  //   // return;
+  //   showError(a);
+  // }
+  // TODO: restore this
+  // save(a);
+}
+''', t: {'commented-out-code': 5});
+      final hit = of(fs, 'commented-out-code').single;
+      expect(hit.line, 2);
+      expect(hit.value, 6);
+    });
+
+    test('skips prose comments and doc comments', () {
+      final fs = scan('''
+// This module talks to the payment gateway. It retries
+// twice on a timeout, then gives up and reports the error
+// to the caller so the screen can show a retry button.
+// The gateway rejects amounts below one hundred rupiah.
+// Keep the retry count low to avoid double charges.
+/// final a = b;
+/// return a;
+/// if (x) {
+/// }
+/// foo();
+void f() {}
+''', t: {'commented-out-code': 3});
+      expect(of(fs, 'commented-out-code'), isEmpty);
+    });
+  });
+
+  group('mutable-global-state', () {
+    test('flags non-final top-level variables and static fields', () {
+      final fs = scan('''
+var counter = 0;
+String? token;
+int _cache = 0;
+final ok = 1;
+const okToo = 2;
+class Config {
+  static String baseUrl = 'x';
+  static final fine = 1;
+  static const alsoFine = 2;
+  late final notStatic = 3;
+}
+''');
+      final hits = of(fs, 'mutable-global-state').toList();
+      expect(hits.map((f) => f.symbol), [
+        'counter',
+        'token',
+        '_cache',
+        'Config.baseUrl',
+      ]);
+      expect(
+        hits.map((f) => f.severity),
+        [Severity.medium, Severity.medium, Severity.low, Severity.medium],
+      );
+    });
+  });
+
+  group('file-name-mismatch', () {
+    test('flags a file whose role word no declaration has', () {
+      final fs = scan(
+        'class PinCheckerCubit {}',
+        path: 'lib/pin_checker_bloc.dart',
+      );
+      expect(of(fs, 'file-name-mismatch').single.message, contains('`bloc`'));
+    });
+
+    test('flags a file named for something else', () {
+      final fs = scan('class InfoRow {}', path: 'lib/row_section.dart');
+      expect(of(fs, 'file-name-mismatch'), hasLength(1));
+    });
+
+    test('accepts close names, extensions, part files and collections', () {
+      for (final (code, path) in [
+        ('class LoginUserParams {}', 'lib/login_params.dart'),
+        ('class MultipleReceiptView {}', 'lib/multi_receipt_view.dart'),
+        ('extension UserX on User {}', 'lib/model_extensions.dart'),
+        ("part of 'a.dart';\nclass Other {}", 'lib/a.g2.dart'),
+        ('class A {}\nclass B {}\nclass C {}', 'lib/theme.dart'),
+        ('enum Direction { up }', 'lib/enums.dart'),
+        ('class Lint {}\nvoid main() {}', 'tool/fix_things.dart'),
+      ]) {
+        expect(
+          of(scan(code, path: path), 'file-name-mismatch'),
+          isEmpty,
+          reason: path,
+        );
+      }
+    });
+  });
+
+  test('pattern families come from imports and calls', () {
+    final parsed = parseString(
+      content: '''
+import 'package:auto_route/auto_route.dart';
+import 'dart:developer';
+class A {
+  factory A.fromJson(Map<String, dynamic> j) => A();
+  void go(BuildContext c) {
+    Navigator.of(c).push(route);
+    debugPrint('x');
+  }
+}
+''',
+      throwIfDiagnostics: false,
+    );
+    final report = FileScanner(
+      path: 'lib/a.dart',
+      unit: parsed.unit,
+      content: '',
+      t: Thresholds(),
+    ).scan();
+    expect(report.families['routing'], {'auto_route', 'Navigator.push'});
+    expect(report.families['serialization'], {'hand-written'});
+    expect(report.families['logging'], {'dart:developer', 'print/debugPrint'});
+  });
 }

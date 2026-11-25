@@ -2,7 +2,9 @@
 
 This file lists every smell the scanner reports, then the judgment smells that Claude finds by reading code. Each entry says what is measured, why it matters, the known false positives, and the usual fix.
 
-Severity rules for metric smells: `medium` when the value passes the threshold, and `high` at twice the threshold. Override any threshold with `--set key=value`.
+Severity rules for metric smells: `medium` when the value passes the threshold, and `high` at twice the threshold. Hygiene smells stop at `medium` (see below). Override any threshold with `--set key=value`.
+
+Repo-level checks (instruction files, commands, scripts, CI, lint config, formatting) are in the agent-readiness scorecard, not here. See `skills/flutter-agent-readiness/references/readiness-checks.md`.
 
 ## Scanner smells
 
@@ -79,6 +81,42 @@ Severity rules for metric smells: `medium` when the value passes the threshold, 
 
 **`long-parameter-list`**: parameters in a function or method. For constructors, only positional parameters count, because named parameters are the normal Dart style for data classes and widgets. Redirecting factories (freezed) are skipped. Threshold `long-parameter-list`, default 5. Fix: group related parameters into a value object.
 
+### Global state
+
+**`mutable-global-state`** (medium; low when the field or its class is private)
+- Measures: a top-level variable or a `static` field that is not `final` or `const`.
+- Why: any code can change it, so screens and tests that share it affect each other. Bundled or parallel tests fail in ways that do not reproduce alone.
+- False positives: a private lazy singleton (`static Foo? _instance`) or a cache. These are low because only their own library can change them.
+- Fix: make it `final` (or `late final`), or move the value into an object that the DI container provides.
+
+### Hygiene (these never go above medium)
+
+Hygiene smells do not break behaviour, so they use their own severity rule: `low` when the value passes the threshold, and `medium` at twice the threshold. They matter most for agents, which read every comment and file name as a signal.
+
+**`todo-hotspot`**
+- Measures: `TODO`, `FIXME`, `HACK` and `XXX` comments in one file. Threshold `todo-hotspot`, default 5. The `todos` list in the report has the text of the first 100.
+- Why: many markers in one place point to unfinished or fragile code. An agent may "finish" a TODO it was not asked to touch.
+- False positives: vendored code, where the TODOs belong to the upstream project.
+- Fix: turn the real ones into tickets and delete the rest.
+
+**`lint-suppression`**
+- Measures: `// ignore:` and `// ignore_for_file:` comments in one file. Threshold `lint-suppression`, default 5. The message lists the silenced rules.
+- Why: each suppression hides a warning from people and agents. An agent copies the pattern, including the `ignore`.
+- False positives: generated code checked in by hand, and code that must call a deprecated API until a migration ends.
+- Fix: fix the code, or turn the rule off in `analysis_options.yaml` with a comment that says why.
+
+**`commented-out-code`**
+- Measures: a block of `//` comments (not `///` doc comments) where at least 60% of the lines read like Dart code. Nested `// //` lines count as code. TODO and `ignore` lines inside the block are skipped. Threshold `commented-out-code` (minimum block lines), default 5.
+- Why: an agent searching the code finds it and can copy it, or "restore" it, as if it were live.
+- False positives: a comment that shows example usage on purpose. Those belong in a `///` doc comment with a code fence.
+- Fix: delete it. Git keeps the history.
+
+**`file-name-mismatch`** (low)
+- Measures: a file whose name does not describe its public declarations. It is reported when the file name ends in a role word (`screen`, `page`, `bloc`, `cubit`, `dialog`, `repository`, `service`, `controller`, `notifier`) that no declaration has, or when fewer than 60% of the file-name words appear in any declaration name. Part files, files with 3 or more public types, extension-only files, scripts with `main()`, and collection names such as `enums.dart` are skipped.
+- Why: agents find code by file name. `pin_checker_bloc.dart` that holds a Cubit, or `account_selector_screen.dart` that holds a sliver, sends them to the wrong place.
+- False positives: a deliberate short name for a design-system widget (`monit_spacer.dart` holding `MSpacer` passes; a renamed class may not).
+- Fix: rename the file or the class so they match.
+
 ## Judgment smells (found by reading)
 
 The scanner cannot see these. Look for them in the hotspot files.
@@ -95,6 +133,10 @@ The scanner cannot see these. Look for them in the hotspot files.
 | Hard-coded design values | Raw `Color(0xFF...)`, font sizes, or paddings instead of theme tokens | The design system drifts, and dark mode breaks |
 | Async gaps | `context` used after `await` without a `mounted` check | Crashes or acts on a disposed screen. The analyzer lint `use_build_context_synchronously` catches most of these when it is enabled |
 | Silent nullable fallbacks | `?? ''`, `?? 0` or `!` on data that must exist | Hides missing data until it reaches the user |
+| Feature envy | A method that mostly reads another class's fields or getters (`order.items`, `order.discount`, `order.tax`) | The logic belongs in that other class. It needs type information, so the scanner cannot measure it |
+| Magic strings | The same string literal (route names, keys, status values) repeated across files | A typo compiles. Use a constant, an enum, or generated routes |
+| Hidden behaviour | Code that runs because of where a file is, reflection, `noSuchMethod`, or config read from an implicit place | Neither people nor agents can find it by following calls |
+| Vague error messages | `throw Exception('error')`, `Failure('Something went wrong')` | The log does not say what failed or what to do next |
 
 ## What this scan does not cover
 

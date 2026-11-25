@@ -14,8 +14,9 @@ import 'package:path/path.dart' as p;
 
 import 'file_scanner.dart';
 import 'model.dart';
+import 'readiness/readiness.dart';
 
-const toolVersion = '0.1.0';
+const toolVersion = '0.2.0';
 
 /// Directories never scanned, at any depth. Dot-directories are skipped too.
 const _skipDirs = {'build', 'node_modules', 'Pods'};
@@ -47,6 +48,8 @@ class ScanOptions {
     this.includeTests = false,
     this.runAnalyzer = true,
     this.top = 15,
+    this.readiness = false,
+    this.formatCheck = true,
     Thresholds? thresholds,
   }) : thresholds = thresholds ?? Thresholds();
 
@@ -54,6 +57,12 @@ class ScanOptions {
   final bool includeTests;
   final bool runAnalyzer;
   final int top;
+
+  /// Add the agent-readiness scorecard (`readiness` key) to the report.
+  final bool readiness;
+
+  /// With [readiness], run `dart format --output=none` on the project.
+  final bool formatCheck;
   final Thresholds thresholds;
 }
 
@@ -122,6 +131,14 @@ Future<ScanResult> scanProject(ScanOptions o) async {
       ? await _runDartAnalyze(root, packages)
       : <String, Object?>{'status': 'skipped', 'reason': '--no-analyze'};
 
+  final readiness = o.readiness
+      ? await runReadiness(
+          root: root,
+          reports: reports,
+          runFormat: o.formatCheck,
+        )
+      : null;
+
   return ScanResult({
     'tool': 'flutter-smell-scan',
     'version': toolVersion,
@@ -168,6 +185,7 @@ Future<ScanResult> scanProject(ScanOptions o) async {
         for (final t in r.todos) {'file': r.path, ...t.toJson()},
     ].take(100).toList(),
     'analyzer': analyzer,
+    if (readiness != null) 'readiness': readiness,
   });
 }
 
