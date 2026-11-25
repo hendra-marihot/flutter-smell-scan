@@ -3,7 +3,7 @@
 A Claude Code plugin with two skills for Flutter and Dart projects:
 
 - **`flutter-smell-scan`** finds code smells and reports them ranked, verified, and with `file:line` for each one.
-- **`flutter-agent-readiness`** audits how ready the repository is for AI coding agents. It reports a pass/warn/fail scorecard for instruction files, commands, scripts, CI, lint config and formatting.
+- **`flutter-agent-readiness`** audits how ready the repository is for AI coding agents. It reports a pass/warn/fail scorecard for instruction files, commands, scripts, tests, unused files, git co-change, CI, lint config and formatting.
 
 Both skills use the same scanner. Each skill has two halves:
 
@@ -87,10 +87,10 @@ With `--readiness`, the report also has a scorecard. See [`skills/flutter-agent-
 
 | Area | Checks |
 |---|---|
-| Agent experience | `instruction-file`, `task-commands`, `non-interactive-scripts`, `unguarded-dangerous-ops`, `fast-local-checks`, `honest-exit-codes`, `inconsistent-patterns`, `generated-noise` |
+| Agent experience | `instruction-file`, `task-commands`, `non-interactive-scripts`, `unguarded-dangerous-ops`, `fast-local-checks`, `honest-exit-codes`, `inconsistent-patterns`, `generated-noise`, `test-mapping`, `unused-files`, `co-change` |
 | Developer experience | `lint-config`, `format`, `ci-parity`, `setup-docs` |
 
-The scorecard reads files and runs only `git ls-files`, `git check-ignore`, and `dart format --output=none`. It never runs tests, builds or setup steps, so it does not measure test speed or whether setup works. Like other readiness scores, it lists gaps in files and config; it does not predict how well an agent will do.
+The scorecard reads files and runs only `git ls-files`, `git check-ignore`, `git log`, and `dart format --output=none`. It never runs tests, builds or setup steps, so it does not measure test speed or whether setup works. Like other readiness scores, it lists gaps in files and config; it does not predict how well an agent will do.
 
 Generated files (`*.g.dart`, `*.freezed.dart`, `*.mocks.dart`, and others) and platform folders are skipped.
 
@@ -98,7 +98,7 @@ Generated files (`*.g.dart`, `*.freezed.dart`, `*.mocks.dart`, and others) and p
 
 - The scanner parses code without resolving types, so it identifies widgets by their `build(BuildContext)` method and types by name. That is why Claude verifies the high findings before reporting them.
 - `deep-widget-nesting` is approximate: it counts every capitalised constructor call, including `TextStyle` and `EdgeInsets`.
-- It does not detect duplicated or unused code. DCM does, on its paid plans.
+- It does not detect duplicated code or unused classes and functions. DCM does, on its paid plans. With `--readiness`, the `unused-files` check finds whole files that nothing imports.
 
 ## Develop
 

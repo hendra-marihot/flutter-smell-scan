@@ -12,35 +12,12 @@ import 'package:analyzer/dart/analysis/features.dart';
 import 'package:analyzer/dart/analysis/utilities.dart';
 import 'package:path/path.dart' as p;
 
+import 'dart_files.dart';
 import 'file_scanner.dart';
 import 'model.dart';
 import 'readiness/readiness.dart';
 
-const toolVersion = '0.2.0';
-
-/// Directories never scanned, at any depth. Dot-directories are skipped too.
-const _skipDirs = {'build', 'node_modules', 'Pods'};
-
-/// Platform folders, skipped only directly under a package root (a
-/// directory with pubspec.yaml), so `lib/features/web/` is still scanned.
-const _platformDirs = {'ios', 'android', 'macos', 'linux', 'windows', 'web'};
-
-/// Test directories, scanned only with --include-tests.
-const _testDirs = {'test', 'integration_test', 'test_driver'};
-
-final _generatedSuffixes = [
-  '.g.dart',
-  '.freezed.dart',
-  '.gr.dart',
-  '.config.dart',
-  '.mocks.dart',
-  '.pb.dart',
-  '.pbenum.dart',
-  '.pbjson.dart',
-  '.pbserver.dart',
-  '.gen.dart',
-  '.chopper.dart',
-];
+const toolVersion = '0.3.0';
 
 class ScanOptions {
   ScanOptions({
@@ -73,21 +50,19 @@ class ScanResult {
 
 Future<ScanResult> scanProject(ScanOptions o) async {
   final root = p.normalize(p.absolute(o.root));
-  final files = _collectFiles(root, o.includeTests);
+  final files = collectDartFiles(root, includeTests: o.includeTests);
   final packages = _findPackages(root);
 
   final reports = <FileReport>[];
   var generatedSkipped = 0;
   for (final file in files) {
     final rel = p.relative(file, from: root);
-    if (_generatedSuffixes.any(rel.endsWith)) {
+    if (hasGeneratedSuffix(rel)) {
       generatedSkipped++;
       continue;
     }
     final content = File(file).readAsStringSync();
-    if (content.trimLeft().startsWith(
-      RegExp(r'//\s*(GENERATED CODE|Generated code|@generated|DO NOT EDIT)'),
-    )) {
+    if (hasGeneratedHeader(content)) {
       generatedSkipped++;
       continue;
     }
@@ -189,29 +164,6 @@ Future<ScanResult> scanProject(ScanOptions o) async {
   });
 }
 
-List<String> _collectFiles(String root, bool includeTests) {
-  final out = <String>[];
-  void walk(Directory dir) {
-    final entries = dir.listSync(followLinks: false)
-      ..sort((a, b) => a.path.compareTo(b.path));
-    final isPackageRoot = File(p.join(dir.path, 'pubspec.yaml')).existsSync();
-    for (final e in entries) {
-      final name = p.basename(e.path);
-      if (e is Directory) {
-        if (name.startsWith('.') || _skipDirs.contains(name)) continue;
-        if (isPackageRoot && _platformDirs.contains(name)) continue;
-        if (!includeTests && _testDirs.contains(name)) continue;
-        walk(e);
-      } else if (e is File && name.endsWith('.dart')) {
-        out.add(e.path);
-      }
-    }
-  }
-
-  walk(Directory(root));
-  return out;
-}
-
 /// Every directory with a pubspec.yaml, mapped to whether `pub get` has run
 /// (a package_config.json exists in it or in a workspace ancestor).
 Map<String, bool> _findPackages(String root) {
@@ -228,8 +180,8 @@ Map<String, bool> _findPackages(String root) {
       final name = p.basename(e.path);
       if (e is Directory &&
           !name.startsWith('.') &&
-          !_skipDirs.contains(name) &&
-          !(isPackageRoot && _platformDirs.contains(name))) {
+          !skipDirs.contains(name) &&
+          !(isPackageRoot && platformDirs.contains(name))) {
         walk(e);
       }
     }

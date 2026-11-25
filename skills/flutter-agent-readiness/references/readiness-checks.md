@@ -8,7 +8,7 @@ Statuses:
 
 - `pass`: nothing to do.
 - `warn`: a real gap, but agents can still work.
-- `fail`: the thing is missing completely (no instruction file, no CI, no README, no lint config, committed build output).
+- `fail`: the thing is missing completely (no instruction file, no CI, no README, no lint config, no test file, committed build output).
 - `unknown`: the scanner could not decide. Claude checks it by reading, or reports it as not checked.
 
 The scorecard is a list of gaps, not a forecast. Readiness scores (this one, Factory's Agent Readiness, and others) measure inputs such as files and config. No published study links them to how well agents do. The only way to know whether a fix helps is to run an agent on real tasks before and after it (see "Measuring a fix" at the end).
@@ -66,6 +66,31 @@ The scorecard is a list of gaps, not a forecast. Readiness scores (this one, Fac
 - Trade-off: an `.ignore` file also hides generated code from an agent that needs to read it (for example, to check a generated GraphQL selection). Agents can still pass `--no-ignore` or open the file directly. Say this when you recommend it.
 - Vendored packages are found by a `homepage` or `repository` field in their pubspec, or a LICENSE without `publish_to: none`. Pub workspace members (`workspace:` in the root pubspec) and melos packages are always first-party. An in-house path package with a LICENSE can still be reported as vendored by mistake. Vendored packages are skipped by the other checks.
 
+### `test-mapping`
+- Checks: whether an agent that changes a `lib/` file can find a test for it. It counts first-party, hand-written `lib/` files that declare a class, mixin or function (parts, generated files and files with only constants are skipped). A file has a test when a test file in the same package is named after it (`foo.dart` and `foo_test.dart`, anywhere under `test/`) or a `*_test.dart` file imports it directly. Helpers and generated mocks under `test/` do not count. A test that reaches the file only through other files does not count either, because almost every file is reachable that way. This is how an agent finds the test for a file: by name, or by searching tests for the import. It is not coverage.
+- Fail: no first-party package has a test file. Warn: fewer than 50% of the files have a test, or a first-party package with 10 or more such files has no test. Both numbers are conventions, not measured cut-offs.
+- `details.untested` lists up to 30 files without a test, most changed first (commit counts from `git log`), or largest first outside git.
+- Why: an agent checks its change by running the tests for the file it changed. With no test to find, it has no fast way to know the change works.
+- False results: a test that covers a file through a barrel export or a shared helper is not counted. A test that imports a data class only to build a fixture, or an interface only to mock it, counts as a test for that file. An abstract interface with no test counts as untested.
+- Fix: add tests for the most-changed untested files first, and name each test after its file.
+
+### `unused-files`
+- Checks: the import graph of all Dart files, built from `import`, `export` (including conditional imports) and `part` directives. Entry points are every Dart file outside `lib/` (tests, `bin/`, `tool/`, `example/`), every `lib/` file with a top-level `main`, and, in a package without a `main`, every `lib/` file outside `lib/src/`. A first-party, hand-written `lib/` file that no entry point reaches is unused. A file that only another unused file imports is unused too.
+- Generated files are read from disk, even when they are gitignored, because aggregators such as `injection.config.dart` and `router.gr.dart` hold the only import of registered classes. When an imported generated file is missing (the build has not run), classes annotated `@injectable`, `@singleton`, `@lazySingleton`, `@module` or `@RoutePage` count as used, and the evidence says so.
+- Warn: 1 or more unused files. Never fail. `details.testOnly` lists `lib/` files that only tests import; they do not change the status.
+- Why: agents search the code. A dead file shows up in search results, costs context to read, and an agent may copy its pattern or fix a bug in it that no user can reach. Agents copy the patterns they find (OpenAI's harness-engineering team). The method is the usual unused-file analysis (DCM `check-unused-files`), not a readiness-source criterion.
+- False results: a file loaded by a path in non-Dart config, by `dart run` from a script, or through a code generator the scanner does not know. Grep for the file name, including non-Dart files, before you report it. A barrel file (only `export` lines) that nothing imports is reported; it is dead, but deleting it changes nothing for users.
+- Fix: delete the file, or import it where it was meant to be used.
+
+### `co-change`
+- Checks: the last 1000 non-merge commits (`git log --name-only`, read-only) for pairs of first-party `lib/` files that change together. Commits that change more than 30 such files are skipped, because they are usually renames or formatting. A pair counts when the files change together in 5 or more commits and in at least 50% of the commits that change either file (shared commits divided by the average of the two commit counts, as in Code Maat). A pair where one file imports, exports or includes the other is a visible link and is only counted in `details.linkedPairs`.
+- Unknown: not a git repository, no commits, or fewer than 20 commits that change `lib/` files. Warn: 1 or more pairs with no import between them. Never fail. The thresholds are conventions, not measured cut-offs.
+- `details.hiddenPairs` lists up to 20 pairs with `sharedCommits`, `coupling`, `sameDirectory`, and `importedTogetherBy` (hand-written files that import both).
+- Why: an agent that changes one file of a hidden pair does not know the other must change, and nothing fails until a user finds the bug. This is the same idea as "if the agent cannot see it, it does not exist" in the readiness sources, applied to code instead of docs. The method itself comes from code forensics (change coupling in Code Maat), not from the readiness sources.
+- Claude adds: open both files of each top pair and say what links them. Drop pairs the analyzer will guide the agent through: a repository interface and its data source, linked through the repository implementation in `importedTogetherBy`, are one layered change, and a compile error leads to the second file. Report duplicated code (two screens or widgets with copied blocks), copied constants, and protocols kept in sync by hand. These are the real hidden links.
+- False results: two files that grow together because one feature is under active work, with no shared code.
+- Fix: move the shared part into one file that both import. When the link must stay, write it down in the instruction file.
+
 ## Developer experience (DX)
 
 ### `lint-config`
@@ -99,7 +124,7 @@ The scorecard is a list of gaps, not a forecast. Readiness scores (this one, Fac
 | Error messages | Read 5 to 10 `throw`, `Failure(...)` and script `echo ... >&2` sites. A good message says what failed, lists the valid values or the nearest match, says what to do next, and does not dump a stack trace by default. Agents arrive with a plan, so a message that names the wrong approach works better than a hint about the right one |
 | Hidden behaviour | Code that runs because of file location, reflection, `noSuchMethod`, implicit config, or build-time magic not explained in the instruction file |
 | Misleading names | Beyond `file-name-mismatch`: classes or methods whose name says something other than what they do, in the hotspot files |
-| Dead code | `commented-out-code` findings, plus DCM `check-unused-files` / `check-unused-code` if installed. Otherwise report as not checked |
+| Dead code | `unused-files` covers whole files. Add the `commented-out-code` findings, and DCM `check-unused-code` for unused classes and functions if it is installed. Otherwise report unused symbols as not checked |
 | Slow feedback loop | Not measured. Static signs only: does the default test command also run `integration_test/`? Is there a way to run one test file? |
 | Context cost of large files | Not a separate check. Report the `long-file` count from `summary.bySmell` and the largest files, because an agent reads whole files |
 | Runtime visibility | Can an agent run the app and see what happens? Look for a documented `flutter run` target, integration or Maestro tests, and readable logs. Report what is missing |

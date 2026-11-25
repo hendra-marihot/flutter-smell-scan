@@ -25,8 +25,10 @@ Future<Map<String, Map<String, Object?>>> checks(
   Map<String, String> files, {
   bool git = true,
   bool format = false,
+  Future<void> Function(Directory dir)? before,
 }) async {
   final dir = await project(files, git: git);
+  if (before != null) await before(dir);
   final result = await scanProject(
     ScanOptions(
       root: dir.path,
@@ -40,6 +42,33 @@ Future<Map<String, Map<String, Object?>>> checks(
     for (final c in r['checks']! as List)
       (c as Map)['id'] as String: c.cast<String, Object?>(),
   };
+}
+
+/// Runs git in [dir] with a fixed identity and no signing.
+Future<void> git(Directory dir, List<String> args) async {
+  final r = await Process.run('git', [
+    '-c',
+    'user.name=t',
+    '-c',
+    'user.email=t@example.com',
+    '-c',
+    'commit.gpgsign=false',
+    ...args,
+  ], workingDirectory: dir.path);
+  if (r.exitCode != 0) throw StateError('git $args: ${r.stderr}');
+}
+
+/// Writes each change set into [dir] and commits it.
+Future<void> commits(Directory dir, List<Map<String, String>> changes) async {
+  for (final (i, files) in changes.indexed) {
+    files.forEach((rel, text) {
+      File(p.join(dir.path, rel))
+        ..parent.createSync(recursive: true)
+        ..writeAsStringSync(text);
+    });
+    await git(dir, ['add', '-A']);
+    await git(dir, ['commit', '-q', '-m', 'change $i']);
+  }
 }
 
 String status(Map<String, Map<String, Object?>> cs, String id) =>
@@ -560,6 +589,223 @@ jobs:
     expect(status(cs, 'instruction-file'), 'pass');
   });
 
+  group('test-mapping', () {
+    test('fails when no test file exists', () async {
+      final cs = await checks({
+        'pubspec.yaml': _pubspec,
+        'lib/main.dart': 'void main() {}\n',
+        'lib/a.dart': 'class A {}\n',
+      });
+      expect(status(cs, 'test-mapping'), 'fail');
+    });
+
+    test('counts a test by name or by direct import', () async {
+      final cs = await checks({
+        'pubspec.yaml': _pubspec,
+        'lib/main.dart': "import 'a.dart';\nimport 'b.dart';\nvoid main() {}\n",
+        'lib/a.dart': 'class A {}\n',
+        'lib/b.dart': 'class B {}\n',
+        // Only constants: nothing to test, so not counted.
+        'lib/consts.dart': 'const x = 1;\n',
+        'test/a_test.dart': 'void main() {}\n',
+        'test/other_test.dart':
+            "import 'package:app/b.dart';\nvoid main() {}\n",
+      });
+      expect(status(cs, 'test-mapping'), 'pass');
+      final d = cs['test-mapping']!['details']! as Map;
+      expect(d['libFiles'], 3);
+      expect(d['testedByName'], 1);
+      expect(d['testedByImportOnly'], 1);
+    });
+
+    test('warns when fewer than half the files have a test', () async {
+      final cs = await checks({
+        'pubspec.yaml': _pubspec,
+        'lib/a.dart': 'class A {}\n',
+        'lib/b.dart': 'class B {}\n',
+        'lib/c.dart': 'class C {}\n',
+        'test/a_test.dart': 'void main() {}\n',
+      });
+      expect(status(cs, 'test-mapping'), 'warn');
+      expect(
+        (cs['test-mapping']!['details']! as Map)['untested'],
+        hasLength(2),
+      );
+    });
+  });
+
+  group('unused-files', () {
+    test('warns about a lib file that nothing imports', () async {
+      final cs = await checks({
+        'pubspec.yaml': _pubspec,
+        'lib/main.dart':
+            "import 'package:app/used.dart';\n"
+            "import 'io_stub.dart' if (dart.library.io) 'io.dart';\n"
+            'void main() {}\n',
+        'lib/used.dart': "part 'used.part.dart';\nclass U {}\n",
+        'lib/used.part.dart': "part of 'used.dart';\n",
+        'lib/io_stub.dart': 'void f() {}\n',
+        'lib/io.dart': 'void f() {}\n',
+        'lib/dead.dart': "import 'dead_child.dart';\nclass D {}\n",
+        'lib/dead_child.dart': 'class C {}\n',
+        'lib/tested.dart': 'class T {}\n',
+        'test/tested_test.dart': "import 'package:app/tested.dart';\n",
+      });
+      expect(status(cs, 'unused-files'), 'warn');
+      final d = cs['unused-files']!['details']! as Map;
+      // A file only a dead file imports is dead too.
+      expect(
+        d['unused'],
+        unorderedEquals(['lib/dead.dart', 'lib/dead_child.dart']),
+      );
+      expect(d['testOnly'], ['lib/tested.dart']);
+    });
+
+    test('treats public files of a library package as entry points', () async {
+      final cs = await checks({
+        'pubspec.yaml': 'name: lib_pkg\n',
+        'lib/lib_pkg.dart': "export 'src/a.dart';\n",
+        'lib/src/a.dart': 'class A {}\n',
+        'lib/extra.dart': 'class E {}\n',
+      });
+      expect(status(cs, 'unused-files'), 'pass');
+    });
+
+    test(
+      'counts registered classes as used when the generated file is missing',
+      () async {
+        final cs = await checks({
+          'pubspec.yaml': _pubspec,
+          'lib/main.dart': "import 'di.config.dart';\nvoid main() {}\n",
+          'lib/service.dart': '@injectable\nclass Service {}\n',
+          'lib/orphan.dart': 'class Orphan {}\n',
+        });
+        final d = cs['unused-files']!['details']! as Map;
+        expect(d['unused'], ['lib/orphan.dart']);
+        expect(d['missingGenerated'], ['lib/di.config.dart']);
+      },
+    );
+  });
+
+  group('co-change', () {
+    test('is unknown in a repository without commits', () async {
+      final cs = await checks({'pubspec.yaml': _pubspec});
+      expect(status(cs, 'co-change'), 'unknown');
+    });
+
+    test('reports files that change together without an import', () async {
+      final cs = await checks(
+        {
+          'pubspec.yaml': _pubspec,
+          'lib/main.dart':
+              "import 'a.dart';\nimport 'b.dart';\nimport 'c.dart';\n"
+              "import 'noise.dart';\nvoid main() {}\n",
+          'lib/b.dart': 'class B {}\n',
+          // c imports a through a barrel, so a and c are a visible link.
+          'lib/c.dart': "import 'barrel.dart';\nclass C {}\n",
+          'lib/barrel.dart': "export 'a.dart';\n",
+        },
+        before: (dir) => commits(dir, [
+          for (var i = 0; i < 24; i++)
+            i < 6
+                ? {
+                    'lib/a.dart': 'class A {} // $i\n',
+                    'lib/b.dart': 'class B {} // $i\n',
+                    'lib/c.dart': "import 'barrel.dart';\nclass C {} // $i\n",
+                  }
+                : {'lib/noise.dart': 'class N {} // $i\n'},
+        ]),
+      );
+      expect(status(cs, 'co-change'), 'warn');
+      final d = cs['co-change']!['details']! as Map;
+      final pairs = [
+        for (final x in d['hiddenPairs']! as List) (x as Map)['files'],
+      ];
+      // a-b and b-c have no import; a-c does.
+      expect(
+        pairs,
+        unorderedEquals([
+          ['lib/a.dart', 'lib/b.dart'],
+          ['lib/b.dart', 'lib/c.dart'],
+        ]),
+      );
+      expect(d['linkedPairs'], 1);
+      expect(d['commits'], 24);
+    });
+
+    test(
+      'reads history when the scan root is a subdirectory of the repo',
+      () async {
+        final top = await project({}, git: true);
+        await commits(top, [
+          for (var i = 0; i < 20; i++)
+            {
+              'app/pubspec.yaml': _pubspec,
+              'app/lib/main.dart':
+                  "import 'a.dart';\nimport 'b.dart';\nvoid main() {}\n",
+              'app/lib/a.dart': 'class A {} // $i\n',
+              'app/lib/b.dart': 'class B {} // $i\n',
+            },
+        ]);
+        final result = await scanProject(
+          ScanOptions(
+            root: p.join(top.path, 'app'),
+            runAnalyzer: false,
+            readiness: true,
+            formatCheck: false,
+          ),
+        );
+        final check =
+            ((result.json['readiness']! as Map)['checks'] as List).firstWhere(
+                  (c) => (c as Map)['id'] == 'co-change',
+                )
+                as Map;
+        expect(check['status'], 'warn');
+        final pairs = (check['details'] as Map)['hiddenPairs'] as List;
+        expect((pairs.single as Map)['files'], ['lib/a.dart', 'lib/b.dart']);
+      },
+    );
+
+    test('is unknown with fewer than 20 commits', () async {
+      final cs = await checks(
+        {'pubspec.yaml': _pubspec},
+        before: (dir) => commits(dir, [
+          for (var i = 0; i < 19; i++)
+            {'lib/main.dart': 'void main() {} // $i\n'},
+        ]),
+      );
+      expect(status(cs, 'co-change'), 'unknown');
+    });
+
+    test('skips commits that change more than 30 files', () async {
+      final cs = await checks(
+        {'pubspec.yaml': _pubspec},
+        before: (dir) => commits(dir, [
+          for (var i = 0; i < 21; i++)
+            {
+              'lib/main.dart': 'void main() {} // $i\n',
+              if (i == 20)
+                for (var f = 0; f < 31; f++) 'lib/f$f.dart': 'class F$f {}\n',
+            },
+        ]),
+      );
+      final d = cs['co-change']!['details']! as Map;
+      expect(d['commits'], 20);
+      expect(d['skippedLargeCommits'], 1);
+    });
+
+    test('passes when there are enough commits and no hidden pairs', () async {
+      final cs = await checks(
+        {'pubspec.yaml': _pubspec},
+        before: (dir) => commits(dir, [
+          for (var i = 0; i < 20; i++)
+            {'lib/main.dart': 'void main() {} // $i\n'},
+        ]),
+      );
+      expect(status(cs, 'co-change'), 'pass');
+    });
+  });
+
   test('a readiness scan with the format check writes nothing', () async {
     final dir = await project({
       'pubspec.yaml': _pubspec,
@@ -571,7 +817,8 @@ jobs:
       'scripts/deploy.sh': 'firebase deploy\n',
       '.github/workflows/ci.yml': 'steps:\n  - run: flutter test\n',
     });
-    await Process.run('git', ['add', '-A'], workingDirectory: dir.path);
+    await git(dir, ['add', '-A']);
+    await git(dir, ['commit', '-q', '-m', 'init']);
 
     Map<String, String> snapshot() => {
       for (final e in dir.listSync(recursive: true))
